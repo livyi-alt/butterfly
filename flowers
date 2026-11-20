@@ -1,0 +1,1398 @@
+--// Core Initialization & Services
+local Players, UserInputService, TweenService, RunService, CoreGui, Lighting =
+    game:GetService("Players"), game:GetService("UserInputService"), game:GetService("TweenService"), game:GetService("RunService"),
+    game:GetService("CoreGui"), game:GetService("Lighting")
+
+local Player = Players.LocalPlayer or Players.PlayerAdded:Wait()
+if not Player then
+    Player = Players.LocalPlayer
+end
+repeat task.wait() until Player and Player.Parent
+-- some executors inject before PlayerGui exists
+pcall(function()
+    Player:WaitForChild("PlayerGui", 10)
+end)
+
+local UI = {}
+local Utils = {}
+local Builders = {}
+Utils.GuiService = game:GetService("GuiService")
+Utils.MarketplaceService = game:GetService("MarketplaceService")
+Utils.SoundService = game:GetService("SoundService")
+Utils.HttpService = game:GetService("HttpService")
+Utils.LocalizationService = game:GetService("LocalizationService")
+
+local DAHOOD_PLACE_ID, HOOD_CUSTOMS_PLACE_ID = 2788229376, 9825515356
+-- set by game-select screen (not only PlaceId)
+local selectedGameMode, isDaHood, isHoodCustoms = nil, false, false
+
+
+-- Snapshot + restore game lighting (kills custom pink fog etc.)
+Utils._lightingSnapshot = Utils._lightingSnapshot or nil
+Utils.captureGameLighting = function()
+    pcall(function()
+        Utils._lightingSnapshot = {
+            FogEnd = Lighting.FogEnd,
+            FogStart = Lighting.FogStart,
+            FogColor = Lighting.FogColor,
+            Ambient = Lighting.Ambient,
+            OutdoorAmbient = Lighting.OutdoorAmbient,
+            Brightness = Lighting.Brightness,
+            ClockTime = Lighting.ClockTime,
+            GlobalShadows = Lighting.GlobalShadows,
+            ColorShift_Top = Lighting.ColorShift_Top,
+            ColorShift_Bottom = Lighting.ColorShift_Bottom,
+        }
+        originalFogEnd = Lighting.FogEnd
+        originalFogStart = Lighting.FogStart
+        originalFogColor = Lighting.FogColor
+        originalAmbient = Lighting.Ambient
+        originalBrightness = Lighting.Brightness
+        originalClockTime = Lighting.ClockTime
+        if workspace.CurrentCamera then
+            originalFov = workspace.CurrentCamera.FieldOfView
+        end
+    end)
+end
+
+Utils.restoreGameLighting = function()
+    pcall(function()
+        -- kill script-owned effects
+        for _, e in ipairs(Lighting:GetChildren()) do
+            local n = e.Name or ""
+            if n:find("Rays") or n:find("ForceHit") or n:find("Zenith") then
+                pcall(function() e:Destroy() end)
+            end
+        end
+        local s = Utils._lightingSnapshot
+        if s then
+            Lighting.FogEnd = s.FogEnd
+            Lighting.FogStart = s.FogStart
+            Lighting.FogColor = s.FogColor
+            Lighting.Ambient = s.Ambient
+            Lighting.OutdoorAmbient = s.OutdoorAmbient
+            Lighting.Brightness = s.Brightness
+            Lighting.ClockTime = s.ClockTime
+            Lighting.GlobalShadows = s.GlobalShadows
+            pcall(function() Lighting.ColorShift_Top = s.ColorShift_Top end)
+            pcall(function() Lighting.ColorShift_Bottom = s.ColorShift_Bottom end)
+        else
+            if originalFogEnd ~= nil then Lighting.FogEnd = originalFogEnd end
+            if originalFogStart ~= nil then Lighting.FogStart = originalFogStart end
+            if originalFogColor ~= nil then Lighting.FogColor = originalFogColor end
+            if originalAmbient ~= nil then Lighting.Ambient = originalAmbient end
+            if originalBrightness ~= nil then Lighting.Brightness = originalBrightness end
+            if originalClockTime ~= nil then Lighting.ClockTime = originalClockTime end
+        end
+        -- clear ColorCorrection left behind
+        for _, e in ipairs(Lighting:GetChildren()) do
+            if e:IsA("ColorCorrectionEffect") and (e.Name:find("Rays") or e.Name:find("Tint")) then
+                pcall(function() e.Enabled = false; e:Destroy() end)
+            end
+        end
+    end)
+end
+
+Utils.resetSessionDefaults = function()
+    pcall(function()
+        if silentAim then
+            silentAim.enabled = false
+            silentAim.fovCircle = false
+            silentAim.tracer = false
+            silentAim.visualizer = false
+        end
+        if camlock then
+            camlock.enabled = false
+            camlock.fovCircle = false
+            if camlock.zoomAim ~= nil then camlock.zoomAim = false end
+        end
+        if Utils.forceHit then
+            Utils.forceHit.enabled = false
+            Utils.forceHit.current = nil
+        end
+        if Utils.flameLock then Utils.flameLock.enabled = false end
+        if Utils.trigger then Utils.trigger.enabled = false end
+    end)
+    pcall(function()
+        espActive = false
+        espShowNames = false
+        espShowDistance = false
+        espShowBox = false
+        espShowHealth = false
+        hitboxActive = false
+        if clearAllESP then clearAllESP() end
+    end)
+    -- ALWAYS force fog / lighting toggles off and restore game defaults
+    pcall(function()
+        fogActive = false
+        fullbrightActive = false
+        forceTimeActive = false
+        brightnessActive = false
+        ambienceActive = false
+        fovActive = false
+        if Utils.pl then
+            Utils.pl.bloomOn = false
+            Utils.pl.sunraysOn = false
+            Utils.pl.dofOn = false
+        end
+        if Utils.env then
+            Utils.env.tintOn = false
+            Utils.env.outdoorOn = false
+        end
+        Utils.restoreGameLighting()
+        if originalFov and workspace.CurrentCamera then
+            workspace.CurrentCamera.FieldOfView = originalFov
+        end
+        if Utils.applyFullbright then pcall(Utils.applyFullbright, false) end
+    end)
+    pcall(function()
+        speedActive = false
+        spinbotActive = false
+        if Utils.mov then
+            Utils.mov.freecam = false
+            Utils.mov.fly = false
+        end
+    end)
+    pcall(function()
+        if Utils.forceHitTargetTracerObj then Utils.forceHitTargetTracerObj.Visible = false end
+        if silentVisObj then silentVisObj.Visible = false end
+        if silentTracerObj then silentTracerObj.Visible = false end
+        if silentFovCircleObj then silentFovCircleObj.Visible = false end
+        if camlockFovCircleObj then camlockFovCircleObj.Visible = false end
+    end)
+end
+
+local function applyGameMode(mode)
+    selectedGameMode = mode
+    pcall(function()
+        fogActive = false
+        fullbrightActive = false
+        forceTimeActive = false
+        if Utils and Utils.resetSessionDefaults then Utils.resetSessionDefaults() end
+        if Utils and Utils.restoreGameLighting then Utils.restoreGameLighting() end
+    end)
+    if mode == "Da Hood" then
+        isDaHood = true
+        isHoodCustoms = false
+    elseif mode == "Hood Customs" then
+        isDaHood = false
+        isHoodCustoms = true
+        pcall(function()
+            if Utils and Utils.skinSetEnabled then Utils.skinSetEnabled(false) end
+        end)
+        task.spawn(function()
+            task.wait(0.15)
+            if selectedGameMode ~= "Hood Customs" then return end
+            pcall(function()
+                if Utils.hcSetEnabled then Utils.hcSetEnabled(true) end
+            end)
+            task.wait(0.5)
+            if selectedGameMode ~= "Hood Customs" then return end
+            pcall(function()
+                if Utils.hcSetEnabled then Utils.hcSetEnabled(false) end
+                if Utils.hcRestoreGunVisuals then Utils.hcRestoreGunVisuals() end
+            end)
+        end)
+    else
+        -- Universal / MM2: no extra game modules yet
+        isDaHood = false
+        isHoodCustoms = false
+    end
+end
+
+function Utils.themeHasBgImage(name)
+    name = name or currentThemeName
+    return name == "Midnight" or name == "Crimson" or name == "Cotton Candy"
+        or name == "Bubblegum" or name == "Ash" or name == "Galaxy"
+end
+
+--// Connection tracking (for clean eject)
+local trackedConns = {}
+function Utils.track(conn)
+    if conn then table.insert(trackedConns, conn) end
+    return conn
+end
+
+--// Sound IDs
+local SoundIds = {
+    Click = "rbxassetid://135366639238389",
+    Hide = "rbxassetid://137957059235157",
+    Unhide = "rbxassetid://115916891254154",
+    Startup = "rbxassetid://131390520971848",
+    Eject = "rbxassetid://1524543584"
+}
+
+function Utils.playSound(id, volume)
+    local ok, snd = pcall(function()
+        local s = Instance.new("Sound")
+        s.SoundId = id
+        s.Volume = volume or 1.2
+        s.Parent = Utils.SoundService
+        s:Play()
+        game:GetService("Debris"):AddItem(s, 3)
+        return s
+    end)
+    if not ok then end
+end
+
+function Utils.playClick() Utils.playSound(SoundIds.Click, 2) end
+
+-- Keybind helpers (keyboard + mouse buttons)
+local MOUSE_BIND_TYPES = {
+    [Enum.UserInputType.MouseButton1] = true,
+    [Enum.UserInputType.MouseButton2] = true,
+    [Enum.UserInputType.MouseButton3] = true,
+}
+
+local function bindDisplayName(bind)
+    if not bind then return "None" end
+    local ok, name = pcall(function() return bind.Name end)
+    if not (ok and name) then return "None" end
+    if name == "MouseButton1" then return "M1" end
+    if name == "MouseButton2" then return "M2" end
+    if name == "MouseButton3" then return "M3" end
+    return name
+end
+
+local function captureBindFromInput(input)
+    if input.KeyCode == Enum.KeyCode.Escape then
+        return nil, true
+    end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            return input.KeyCode, false
+        end
+    elseif MOUSE_BIND_TYPES[input.UserInputType] then
+        return input.UserInputType, false
+    end
+    return nil, false
+end
+
+local function inputMatchesBind(input, bind)
+    if not bind then return false end
+    local ok, enumType = pcall(function() return bind.EnumType end)
+    if not ok or not enumType then return false end
+    if enumType == Enum.KeyCode then
+        return input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == bind
+    end
+    if enumType == Enum.UserInputType then
+        return input.UserInputType == bind
+    end
+    return false
+end
+
+
+--// Themes (colors from v2.9 / Fluent-style palettes)
+local ThemePresets = {
+    ["Crimson"] = {
+        Primary = Color3.fromRGB(118, 18, 22),
+        Secondary = Color3.fromRGB(70, 14, 18),
+        Accent = Color3.fromRGB(255, 92, 128),
+        Text = Color3.fromRGB(255, 236, 238),
+        TextDark = Color3.fromRGB(255, 190, 200),
+        Border = Color3.fromRGB(90, 22, 28),
+        GradTop = Color3.fromRGB(40, 5, 7),
+        GradMid = Color3.fromRGB(158, 30, 36),
+        GradBottom = Color3.fromRGB(40, 5, 7),
+        CardT = 0.42,
+        CardColor = Color3.fromRGB(92, 18, 24),
+    },
+    ["Midnight"] = {
+        Primary = Color3.fromRGB(10, 10, 14),
+        Secondary = Color3.fromRGB(20, 20, 26),
+        Accent = Color3.fromRGB(168, 168, 178),
+        Text = Color3.fromRGB(228, 228, 234),
+        TextDark = Color3.fromRGB(138, 138, 148),
+        Border = Color3.fromRGB(255, 255, 255),
+        GradTop = Color3.fromRGB(3, 3, 5),
+        GradMid = Color3.fromRGB(22, 22, 26),
+        GradBottom = Color3.fromRGB(3, 3, 5),
+        CardT = 0.36,
+        CardColor = Color3.fromRGB(22, 22, 28),
+    },
+    ["Ocean"] = {
+        Primary = Color3.fromRGB(18, 70, 82),
+        Secondary = Color3.fromRGB(22, 78, 90),
+        Accent = Color3.fromRGB(90, 230, 220),
+        Text = Color3.fromRGB(236, 252, 252),
+        TextDark = Color3.fromRGB(170, 220, 218),
+        Border = Color3.fromRGB(50, 130, 140),
+        GradTop = Color3.fromRGB(10, 40, 50),
+        GradMid = Color3.fromRGB(36, 120, 132),
+        GradBottom = Color3.fromRGB(10, 40, 50),
+        CardT = 0.36,
+        CardColor = Color3.fromRGB(28, 88, 98),
+    },
+    ["Lavender"] = {
+        Primary = Color3.fromRGB(150, 122, 188),
+        Secondary = Color3.fromRGB(164, 136, 200),
+        Accent = Color3.fromRGB(228, 200, 255),
+        Text = Color3.fromRGB(252, 246, 255),
+        TextDark = Color3.fromRGB(222, 204, 240),
+        Border = Color3.fromRGB(176, 150, 210),
+        GradTop = Color3.fromRGB(108, 78, 150),
+        GradMid = Color3.fromRGB(186, 156, 224),
+        GradBottom = Color3.fromRGB(108, 78, 150),
+        CardT = 0.28,
+        CardColor = Color3.fromRGB(168, 140, 204),
+    },
+    ["Cotton Candy"] = {
+        Primary = Color3.fromRGB(255, 210, 235),
+        Secondary = Color3.fromRGB(255, 225, 242),
+        Accent = Color3.fromRGB(255, 150, 220),
+        Text = Color3.fromRGB(255, 255, 255),
+        TextDark = Color3.fromRGB(255, 240, 250),
+        Border = Color3.fromRGB(255, 190, 230),
+        GradTop = Color3.fromRGB(255, 200, 230),
+        GradMid = Color3.fromRGB(170, 210, 255),
+        GradBottom = Color3.fromRGB(255, 200, 230),
+        CardT = 0.22,
+        CardColor = Color3.fromRGB(255, 185, 220),
+    },
+    ["Bubblegum"] = {
+        Primary = Color3.fromRGB(22, 6, 18),
+        Secondary = Color3.fromRGB(36, 10, 30),
+        Accent = Color3.fromRGB(255, 95, 175),
+        Text = Color3.fromRGB(255, 255, 255),
+        TextDark = Color3.fromRGB(255, 175, 210),
+        Border = Color3.fromRGB(120, 28, 90),
+        GradTop = Color3.fromRGB(28, 4, 18),
+        GradMid = Color3.fromRGB(200, 45, 120),
+        GradBottom = Color3.fromRGB(28, 4, 18),
+        CardT = 0.24,
+        CardColor = Color3.fromRGB(56, 14, 42),
+    },
+
+    ["Hacker"] = {
+        Primary = Color3.fromRGB(4, 8, 4),
+        Secondary = Color3.fromRGB(8, 16, 8),
+        Accent = Color3.fromRGB(40, 255, 90),
+        Text = Color3.fromRGB(210, 255, 220),
+        TextDark = Color3.fromRGB(90, 170, 110),
+        Border = Color3.fromRGB(20, 70, 30),
+        GradTop = Color3.fromRGB(0, 0, 0),
+        GradMid = Color3.fromRGB(8, 28, 12),
+        GradBottom = Color3.fromRGB(0, 0, 0),
+        CardT = 0.2,
+        CardColor = Color3.fromRGB(10, 22, 12),
+    },
+    ["Galaxy"] = {
+        Primary = Color3.fromRGB(18, 10, 36),
+        Secondary = Color3.fromRGB(28, 16, 52),
+        Accent = Color3.fromRGB(150, 110, 255),
+        Text = Color3.fromRGB(232, 224, 255),
+        TextDark = Color3.fromRGB(160, 150, 210),
+        Border = Color3.fromRGB(70, 40, 120),
+        GradTop = Color3.fromRGB(8, 6, 22),
+        GradMid = Color3.fromRGB(48, 22, 88),
+        GradBottom = Color3.fromRGB(10, 16, 40),
+        CardT = 0.36,
+        CardColor = Color3.fromRGB(36, 20, 64),
+    },
+    ["Ash"] = {
+        Primary = Color3.fromRGB(78, 78, 84),
+        Secondary = Color3.fromRGB(90, 90, 98),
+        Accent = Color3.fromRGB(220, 220, 226),
+        Text = Color3.fromRGB(246, 246, 248),
+        TextDark = Color3.fromRGB(196, 196, 204),
+        Border = Color3.fromRGB(120, 120, 128),
+        GradTop = Color3.fromRGB(52, 52, 58),
+        GradMid = Color3.fromRGB(108, 108, 116),
+        GradBottom = Color3.fromRGB(52, 52, 58),
+        CardT = 0.24,
+        CardColor = Color3.fromRGB(92, 92, 100),
+    },
+}
+local THEME_NAMES = {"Crimson", "Bubblegum", "Ash", "Cotton Candy", "Midnight", "Galaxy", "Ocean", "Lavender", "Hacker"}
+local currentThemeName, panelBgVisible, Theme = "Midnight", false, {}
+for k, v in pairs(ThemePresets["Midnight"]) do
+    Theme[k] = v
+end
+-- optional override; when set, keeps Accent even after applyTheme
+Utils.themeCustom = Utils.themeCustom or { accent = nil, text = nil, outline = nil, bg = nil, outlineOn = true }
+
+--// Registries
+local accentRegistry, fontSizeRegistry, knobRegistry, trackRegistry = {}, {}, {}, {}
+
+local function dimAccentTrack()
+    local a = Theme.Accent or Color3.new(1, 1, 1)
+    -- dark track so only the fill shows accent
+    return Color3.new(a.R * 0.22 + 0.08, a.G * 0.22 + 0.08, a.B * 0.22 + 0.08)
+end
+
+function UI.regTrack(inst)
+    if inst then table.insert(trackRegistry, inst) end
+    return inst
+end
+
+function Utils.applyAccentEverywhere()
+    local a = Theme.Accent
+    if Utils.themeCustom.accent then
+        Theme.Accent = Utils.themeCustom.accent
+        a = Utils.themeCustom.accent
+    end
+    for _, e in ipairs(accentRegistry) do
+        if e.inst and e.inst.Parent then
+            pcall(function() e.inst[e.prop] = a end)
+        end
+    end
+    local trackCol = dimAccentTrack()
+    for _, inst in ipairs(trackRegistry) do
+        if inst and inst.Parent then
+            pcall(function() inst.BackgroundColor3 = trackCol end)
+        end
+    end
+    pcall(function()
+        if FpsLabel then FpsLabel.TextColor3 = a end
+    end)
+    pcall(function()
+        if MainStroke then
+            if Utils.themeCustom.outline then
+                MainStroke.Color = Utils.themeCustom.outline
+            elseif currentThemeName == "Midnight" then
+                MainStroke.Color = Color3.new(1, 1, 1)
+            else
+                MainStroke.Color = Theme.Border or a
+            end
+        end
+    end)
+    pcall(function()
+        if AP and AP.Stroke and Utils.themeCustom.accent then
+            AP.Stroke.Color = a
+        end
+    end)
+    -- refresh active toggle switches (on = accent)
+    pcall(function()
+        for _, d in ipairs(MainFrame:GetDescendants()) do
+            if d:IsA("TextButton") and d.Size.X.Offset == 36 and d.Size.Y.Offset == 18 then
+                -- on-state roughly: higher R/G/B or matches old accent - re-apply by indicator position
+                local ind = d:FindFirstChildWhichIsA("Frame")
+                if ind and ind.Position.X.Offset >= 18 then
+                    d.BackgroundColor3 = a
+                    d.BackgroundTransparency = 0.08
+                end
+            end
+        end
+    end)
+    pcall(Utils.applyThemeOverrides)
+end
+
+function Utils.applyThemeOverrides()
+    local U = Utils.ui or {}
+    local preset = ThemePresets[currentThemeName] or ThemePresets.Midnight
+    if Utils.themeCustom.text then
+        Theme.Text = Utils.themeCustom.text
+        Theme.TextDark = Color3.new(
+            Utils.themeCustom.text.R * 0.7 + 0.08,
+            Utils.themeCustom.text.G * 0.7 + 0.08,
+            Utils.themeCustom.text.B * 0.7 + 0.08
+        )
+    else
+        Theme.Text = preset.Text
+        Theme.TextDark = preset.TextDark
+    end
+    local title = U.TitleLabel
+    if title then title.TextColor3 = Theme.Text end
+    if U.CloseButton then U.CloseButton.TextColor3 = Theme.Text end
+    if U.MinimizeButton then U.MinimizeButton.TextColor3 = Theme.Text end
+    if Utils.sideSearch then
+        Utils.sideSearch.TextColor3 = Theme.Text
+        Utils.sideSearch.PlaceholderColor3 = Theme.TextDark
+    end
+    local gui = U.ScreenGui
+    if gui then
+        for _, d in ipairs(gui:GetDescendants()) do
+            if d.Name == "RaysTitle" or d.Name == "RaysTitle" then
+                d.TextColor3 = Theme.Text
+            end
+            if d.Name == "EaseSeg" then
+                d.BackgroundColor3 = Theme.Accent
+            elseif d.Name == "RaysPartPick" or d:GetAttribute("RaysPartPick") then
+                if d:GetAttribute("PartOn") then
+                    d.BackgroundColor3 = Theme.Accent
+                end
+            end
+        end
+    end
+    if Utils.themeCustom.outline then
+        local oc = Utils.themeCustom.outline
+        Theme.Border = oc
+        if U.MainStroke then U.MainStroke.Color = oc end
+        if AP and AP.Stroke then AP.Stroke.Color = oc end
+        if gui then
+            for _, d in ipairs(gui:GetDescendants()) do
+                if d:IsA("UIStroke") then
+                    d.Color = oc
+                end
+            end
+        end
+    end
+    if Utils.themeCustom.bg then
+        local raw = Utils.themeCustom.bg
+        local minC = 18 / 255
+        local bg = Color3.new(math.max(raw.R, minC), math.max(raw.G, minC), math.max(raw.B, minC))
+        Utils.themeCustom.bg = bg
+        Theme.Primary = bg
+        Theme.Secondary = Color3.new(math.clamp(bg.R * 0.72, 0, 1), math.clamp(bg.G * 0.72, 0, 1), math.clamp(bg.B * 0.72, 0, 1))
+        Theme.GradTop = Color3.new(math.clamp(bg.R * 0.55, 0, 1), math.clamp(bg.G * 0.55, 0, 1), math.clamp(bg.B * 0.55, 0, 1))
+        Theme.GradMid = bg
+        Theme.GradBottom = Color3.new(math.clamp(bg.R * 0.4, 0, 1), math.clamp(bg.G * 0.4, 0, 1), math.clamp(bg.B * 0.4, 0, 1))
+        Theme.CardColor = Theme.Secondary
+        if U.MainFrame then
+            U.MainFrame.BackgroundColor3 = bg
+            U.MainFrame.BackgroundTransparency = 0
+        end
+        if U.MainGradient then
+            U.MainGradient.Enabled = true
+            U.MainGradient.Rotation = 45
+            U.MainGradient.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Theme.GradTop),
+                ColorSequenceKeypoint.new(0.5, Theme.GradMid),
+                ColorSequenceKeypoint.new(1, Theme.GradBottom),
+            })
+        end
+        if U.Sidebar then
+            U.Sidebar.BackgroundColor3 = Theme.CardColor or Theme.Secondary
+            U.Sidebar.BackgroundTransparency = 0.05
+        end
+        if U.PageScroll then
+            U.PageScroll.BackgroundColor3 = bg
+        end
+        if AP and AP.Frame then
+            AP.Frame.BackgroundColor3 = bg
+            if AP.Grad then
+                AP.Grad.Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0, Theme.GradTop),
+                    ColorSequenceKeypoint.new(0.5, Theme.GradMid),
+                    ColorSequenceKeypoint.new(1, Theme.GradBottom),
+                })
+            end
+        end
+        if U.TopBar then
+            U.TopBar.BackgroundTransparency = 1
+        end
+    end
+    if U.Sidebar then
+        U.Sidebar.BackgroundColor3 = Theme.CardColor or Theme.Secondary or Theme.Primary
+        U.Sidebar.BackgroundTransparency = 0.05
+    end
+    if U.MainStroke then
+        U.MainStroke.Enabled = Utils.themeCustom.outlineOn ~= false
+        if U.OutlineGrad then
+            local oc = U.MainStroke.Color
+            U.OutlineGrad.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, oc),
+                ColorSequenceKeypoint.new(0.5, Color3.new(math.clamp(oc.R * 1.25, 0, 1), math.clamp(oc.G * 1.25, 0, 1), math.clamp(oc.B * 1.25, 0, 1))),
+                ColorSequenceKeypoint.new(1, oc),
+            })
+        end
+    end
+end
+
+
+function UI.regAccent(inst, prop)
+    table.insert(accentRegistry, {inst = inst, prop = prop})
+    return inst
+end
+
+function UI.regKnob(inst)
+    table.insert(knobRegistry, inst)
+    return inst
+end
+
+function UI.applyPanelFont(inst)
+    if not inst then return inst end
+    pcall(function()
+        inst.Font = Enum.Font.BuilderSans
+    end)
+    return inst
+end
+
+function UI.regFont(inst, base)
+    table.insert(fontSizeRegistry, {inst = inst, base = base})
+    UI.applyPanelFont(inst)
+    return inst
+end
+
+function UI.addCorner(parent, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 0)
+    corner.Parent = parent
+end
+
+function UI.addGlassStroke(inst, thick)
+    if not inst then return nil end
+    local st = inst:FindFirstChild("GlassStroke")
+    if not st then
+        st = Instance.new("UIStroke")
+        st.Name = "GlassStroke"
+        st.Parent = inst
+    end
+    st.Color = Color3.fromRGB(255, 255, 255)
+    st.Transparency = 0.76
+    st.Thickness = thick or 1
+    st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    st.Enabled = glassUIActive and true or false
+    return st
+end
+
+--// Main ScreenGui
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RaysPanelCollapsible"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = false
+
+local successGui = pcall(function()
+    ScreenGui.Parent = CoreGui
+end)
+if not successGui then
+    ScreenGui.Parent = Player:WaitForChild("PlayerGui")
+end
+
+--// Main Frame (Matcha-like wide layout)
+local PANEL_W, PANEL_H = 780, 800
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "RaysMain"
+MainFrame.Size = UDim2.new(0, PANEL_W, 0, PANEL_H)
+MainFrame.Position = UDim2.new(0.5, -math.floor(PANEL_W / 2), 0.5, -math.floor(PANEL_H / 2))
+MainFrame.BackgroundColor3 = Theme.Primary
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = ScreenGui
+UI.addCorner(MainFrame, UDim.new(0, 10))
+-- Avatar preview panel (one table to avoid register limit) — ~3:4 portrait
+local AP = { W = 280, H = 400, open = false, clone = nil, liveSpin = false, liveSync = true, liveNoDelay = true, spinAngle = 0, lastSync = 0 }
+AP.Frame = Instance.new("Frame")
+AP.Frame.Name = "RaysAvatarPreview"
+AP.Frame.Size = UDim2.new(0, AP.W, 0, AP.H)
+AP.Frame.Position = UDim2.new(0.5, math.floor(PANEL_W / 2) + 12, 0.5, -math.floor(PANEL_H / 2))
+AP.Frame.BackgroundColor3 = Theme.Primary
+AP.Frame.BorderSizePixel = 0
+AP.Frame.Visible = false
+AP.Frame.ClipsDescendants = true
+AP.Frame.ZIndex = 5
+AP.Frame.Parent = ScreenGui
+UI.addCorner(AP.Frame, UDim.new(0, 10))
+AP.Stroke = Instance.new("UIStroke")
+AP.Stroke.Thickness = 2
+AP.Stroke.Transparency = 0.05
+AP.Stroke.Color = Theme.Border or Color3.fromRGB(99, 18, 22)
+AP.Stroke.Parent = AP.Frame
+AP.Grad = Instance.new("UIGradient")
+AP.Grad.Rotation = 45
+AP.Grad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Theme.GradTop or Color3.fromRGB(118, 20, 24)),
+    ColorSequenceKeypoint.new(0.5, Theme.GradMid or Color3.fromRGB(176, 36, 42)),
+    ColorSequenceKeypoint.new(1, Theme.GradBottom or Color3.fromRGB(118, 20, 24)),
+})
+AP.Grad.Parent = AP.Frame
+AP.Title = Instance.new("TextLabel")
+AP.Title.Size = UDim2.new(1, -16, 0, 26)
+AP.Title.Position = UDim2.new(0, 8, 0, 6)
+AP.Title.BackgroundTransparency = 1
+AP.Title.Text = "Avatar Preview"
+AP.Title.TextColor3 = Theme.Text
+AP.Title.TextSize = 13
+AP.Title.Font = Enum.Font.BuilderSans
+AP.Title.TextXAlignment = Enum.TextXAlignment.Left
+AP.Title.ZIndex = 7
+AP.Title.Parent = AP.Frame
+-- transparent viewport: character draws on panel bg (no inner box)
+AP.Viewport = Instance.new("ViewportFrame")
+AP.Viewport.Name = "AvatarViewport"
+AP.Viewport.Size = UDim2.new(1, -4, 1, -30)
+AP.Viewport.Position = UDim2.new(0, 2, 0, 28)
+AP.Viewport.BackgroundTransparency = 1
+AP.Viewport.BorderSizePixel = 0
+AP.Viewport.Ambient = Color3.fromRGB(200, 200, 210)
+AP.Viewport.LightColor = Color3.fromRGB(255, 255, 255)
+AP.Viewport.LightDirection = Vector3.new(-0.5, -1, -0.5)
+AP.Viewport.ZIndex = 6
+AP.Viewport.Parent = AP.Frame
+AP.World = Instance.new("WorldModel")
+AP.World.Parent = AP.Viewport
+AP.Cam = Instance.new("Camera")
+AP.Cam.FieldOfView = 42
+AP.Cam.Parent = AP.Viewport
+AP.Viewport.CurrentCamera = AP.Cam
+
+local MainGradient = Instance.new("UIGradient")
+MainGradient.Rotation = 45
+MainGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Theme.GradTop or Color3.fromRGB(118, 20, 24)),
+    ColorSequenceKeypoint.new(0.5, Theme.GradMid or Color3.fromRGB(176, 36, 42)),
+    ColorSequenceKeypoint.new(1, Theme.GradBottom or Color3.fromRGB(118, 20, 24)),
+})
+MainGradient.Parent = MainFrame
+Utils.ui = Utils.ui or {}
+Utils.ui.ScreenGui = ScreenGui
+Utils.ui.MainFrame = MainFrame
+Utils.ui.MainGradient = MainGradient
+
+function UI.cardColor()
+    if Theme.CardColor then
+        return Theme.CardColor
+    end
+    if Theme.CardT and Theme.CardT > 0 then
+        return Color3.fromRGB(255, 210, 214)
+    end
+    return Theme.Secondary
+end
+
+function UI.cardTransparency()
+    return Theme.CardT or 0
+end
+
+function UI.styleCard(inst)
+    if not inst then return inst end
+    if inst.Name == "RaysMain" or inst.Name == "TopBar" or inst.Name == "TopBarCover" or inst.Name == "PanelBgImage" or inst.Name == "RaysToggle" then
+        return inst
+    end
+    inst.BackgroundColor3 = UI.cardColor()
+    inst.BackgroundTransparency = UI.cardTransparency()
+    local st = inst:FindFirstChild("FeatureStroke")
+    if not st then
+        st = Instance.new("UIStroke")
+        st.Name = "FeatureStroke"
+        st.Parent = inst
+    end
+    st.Enabled = false
+    st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    return inst
+end
+
+function Utils.unifyFeatureSurfaces(root)
+    if not root then return end
+    for _, d in ipairs(root:GetDescendants()) do
+        if d:IsA("Frame") or d:IsA("TextButton") or d:IsA("TextBox") then
+            local skip = d.BackgroundTransparency >= 0.98
+            if d:IsA("Frame") and d.Parent and d.Parent:IsA("TextButton") and d.Size.Y.Scale == 1 and d.Size.X.Scale > 0 then
+                skip = true
+            end
+            if d.Size.X.Offset > 0 and d.Size.X.Offset <= 22 and d.Size.Y.Offset <= 22 then
+                skip = true
+            end
+            if (d.Size.X.Offset == 36 and d.Size.Y.Offset == 18) or (d.Size.X.Offset == 14 and d.Size.Y.Offset == 14) then
+                skip = true
+            end
+            if d.Name == "ColorPreview" or d.Name == "SVMap" or d.Name == "HueBar" or d.Name == "RaysToggle" or d.Name == "RaysPartPick" or d:GetAttribute("RaysPartPick") or d.Name == "EaseGridH" or d.Name == "EaseGridV" or d.Name == "EasePlot" then
+                skip = true
+            end
+            if d:IsA("Frame") and d.BackgroundColor3 == Theme.Accent then
+                skip = true
+            end
+            if not skip then
+                UI.styleCard(d)
+            end
+        end
+    end
+end
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Theme.Border or Color3.fromRGB(99, 18, 22)
+MainStroke.Thickness = 2
+MainStroke.Transparency = 0.05
+MainStroke.Enabled = true
+MainStroke.Parent = MainFrame
+do
+    local grad = Instance.new("UIGradient")
+    grad.Name = "OutlineGrad"
+    grad.Rotation = 45
+    grad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, MainStroke.Color),
+        ColorSequenceKeypoint.new(0.5, Color3.new(
+            math.clamp(MainStroke.Color.R * 1.25, 0, 1),
+            math.clamp(MainStroke.Color.G * 1.25, 0, 1),
+            math.clamp(MainStroke.Color.B * 1.25, 0, 1)
+        )),
+        ColorSequenceKeypoint.new(1, MainStroke.Color),
+    })
+    grad.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.2),
+        NumberSequenceKeypoint.new(0.5, 0),
+        NumberSequenceKeypoint.new(1, 0.35),
+    })
+    grad.Parent = MainStroke
+    Utils.ui = Utils.ui or {}
+    Utils.ui.OutlineGrad = grad
+end
+Utils.ui = Utils.ui or {}
+Utils.ui.MainStroke = MainStroke
+
+local PanelBgImage = Instance.new("ImageLabel")
+PanelBgImage.Name = "PanelBgImage"
+PanelBgImage.Size = UDim2.new(1, 0, 1, 0)
+PanelBgImage.Position = UDim2.new(0, 0, 0, 0)
+PanelBgImage.BackgroundTransparency = 1
+PanelBgImage.Image = "rbxassetid://102501242944732"
+PanelBgImage.ImageTransparency = 0.97
+PanelBgImage.ScaleType = Enum.ScaleType.Crop
+PanelBgImage.ZIndex = 0
+PanelBgImage.Visible = false
+PanelBgImage.Parent = MainFrame
+
+-- mirror panel bg image onto avatar preview
+if AP and AP.Frame and not AP.Bg then
+    AP.Bg = Instance.new("ImageLabel")
+    AP.Bg.Name = "PreviewBg"
+    AP.Bg.Size = UDim2.new(1, 0, 1, 0)
+    AP.Bg.BackgroundTransparency = 1
+    AP.Bg.Image = PanelBgImage.Image
+    AP.Bg.ImageTransparency = PanelBgImage.ImageTransparency
+    AP.Bg.ScaleType = Enum.ScaleType.Crop
+    AP.Bg.ZIndex = 5
+    AP.Bg.Parent = AP.Frame
+    UI.addCorner(AP.Bg, UDim.new(0, 10))
+end
+
+function Utils.updatePanelBgImage()
+    if not PanelBgImage then return end
+    local id, t = nil, 0.97
+    if currentThemeName == "Midnight" then
+        id = "rbxassetid://17793479623"
+        t = 0.88
+    elseif currentThemeName == "Crimson" then
+        id = "rbxassetid://79903315865408"
+        t = 0.94
+    elseif currentThemeName == "Cotton Candy" then
+        id = "rbxassetid://14424561053"
+        t = 0.78
+    elseif currentThemeName == "Bubblegum" then
+        id = "rbxassetid://97023542098667"
+        t = 0.82
+    elseif currentThemeName == "Ash" then
+        id = "rbxassetid://138505460833612"
+        t = 0.9
+    elseif currentThemeName == "Galaxy" then
+        id = "rbxassetid://1025773173"
+        t = 0.9
+    end
+    local show = panelBgVisible and id ~= nil
+    PanelBgImage.Visible = show
+    if id then
+        PanelBgImage.Image = id
+    end
+    PanelBgImage.ImageTransparency = t
+    if AP and AP.Bg then
+        AP.Bg.Visible = show
+        if id then AP.Bg.Image = id end
+        AP.Bg.ImageTransparency = t
+    end
+end
+
+-- Glass / blur UI (Matcha-style). Toggle in Settings.
+local glassUIActive, glassRegistry, worldBlur, cardRegistry = false, {}, nil, {}
+function UI.regCard(inst)
+    if inst then table.insert(cardRegistry, inst) end
+    return inst
+end
+
+function UI.regGlass(inst, solidT, glassT)
+    if not inst then return inst end
+    table.insert(glassRegistry, {
+        inst = inst,
+        solid = solidT or 0,
+        glass = glassT or 0.42,
+    })
+    UI.regCard(inst)
+    return inst
+end
+
+function Utils.applyGlassUI(on)
+    glassUIActive = on and true or false
+    MainStroke.Enabled = true
+    MainStroke.Thickness = 2
+    MainStroke.Transparency = glassUIActive and 0.2 or 0.05
+    MainStroke.Color = Theme.Border or Color3.fromRGB(99, 18, 22)
+    TopBar.BackgroundTransparency = 1
+    if TopBarCover then
+        TopBarCover.BackgroundTransparency = 1
+    end
+    if glassUIActive then
+        MainFrame.BackgroundTransparency = 0.42
+        if not worldBlur or not worldBlur.Parent then
+            worldBlur = Lighting:FindFirstChild("RaysGlassBlur")
+            if not worldBlur then
+                worldBlur = Instance.new("BlurEffect")
+                worldBlur.Name = "RaysGlassBlur"
+                worldBlur.Parent = Lighting
+            end
+        end
+        worldBlur.Size = 18
+        worldBlur.Enabled = true
+    else
+        MainFrame.BackgroundTransparency = 0
+        if worldBlur then
+            worldBlur.Enabled = false
+        end
+    end
+    for _, e in ipairs(glassRegistry) do
+        if e.inst and e.inst.Parent then
+            pcall(function()
+                UI.styleCard(e.inst)
+                if glassUIActive then
+                    e.inst.BackgroundTransparency = math.clamp((e.glass or 0.55), 0.35, 0.8)
+                end
+            end)
+        end
+    end
+    for _, inst in ipairs(cardRegistry) do
+        if inst and inst.Parent then
+            pcall(function()
+                UI.styleCard(inst)
+                if glassUIActive then
+                    inst.BackgroundTransparency = math.clamp((Theme.CardT or 0.5) + 0.18, 0.4, 0.82)
+                end
+            end)
+        end
+    end
+    pcall(function()
+        if Utils.updateSidebarSelection then
+            Utils.updateSidebarSelection()
+        end
+    end)
+end
+
+--// Top Bar
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.Size = UDim2.new(1, 0, 0, 48)
+TopBar.BackgroundColor3 = Theme.Primary
+TopBar.BackgroundTransparency = 1
+TopBar.BorderSizePixel = 0
+TopBar.Active = true
+TopBar.ZIndex = 6
+TopBar.Parent = MainFrame
+UI.addCorner(TopBar, UDim.new(0, 10))
+UI.addGlassStroke(MainFrame, 1)
+
+local TopBarCover = Instance.new("Frame")
+TopBarCover.Size = UDim2.new(1, 0, 0, 10)
+TopBarCover.Position = UDim2.new(0, 0, 1, -10)
+TopBarCover.BackgroundTransparency = 1
+TopBarCover.BorderSizePixel = 0
+TopBarCover.Parent = TopBar
+
+-- Draggable Window
+local draggingMain, dragInputMain, dragStartMain, startPosMain
+TopBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingMain = true
+        dragStartMain = input.Position
+        startPosMain = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                draggingMain = false
+            end
+        end)
+    end
+end)
+
+TopBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInputMain = input
+    end
+end)
+
+Utils.track(UserInputService.InputChanged:Connect(function(input)
+    if input == dragInputMain and draggingMain then
+        local delta = input.Position - dragStartMain
+        local targetPos = UDim2.new(
+            startPosMain.X.Scale,
+            startPosMain.X.Offset + delta.X,
+            startPosMain.Y.Scale,
+            startPosMain.Y.Offset + delta.Y
+        )
+        TweenService:Create(MainFrame, TweenInfo.new(0.06, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {Position = targetPos}):Play()
+    end
+end))
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Name = "RaysTitle"
+TitleLabel.Size = UDim2.new(1, -4, 0, 36)
+TitleLabel.TextWrapped = true
+TitleLabel.TextScaled = true
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "8 i 8  M A I N  U I"
+TitleLabel.TextColor3 = Theme.Text
+TitleLabel.TextSize = 16
+TitleLabel.Font = Enum.Font.BuilderSans
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Center
+TitleLabel.LayoutOrder = -10
+TitleLabel.Parent = TopBar
+UI.regFont(TitleLabel, 16)
+
+local FpsLabel = Instance.new("TextLabel")
+FpsLabel.Size = UDim2.new(0, 90, 1, 0)
+FpsLabel.Position = UDim2.new(1, -160, 0, 0)
+FpsLabel.BackgroundTransparency = 1
+FpsLabel.Text = "FPS: 60"
+FpsLabel.TextColor3 = Theme.Accent
+FpsLabel.TextSize = 13
+FpsLabel.Font = Enum.Font.BuilderSans
+FpsLabel.TextXAlignment = Enum.TextXAlignment.Right
+FpsLabel.Visible = false
+FpsLabel.Parent = TopBar
+UI.regAccent(FpsLabel, "TextColor3")
+UI.regFont(FpsLabel, 13)
+
+local currentFps, fpsCap = 60, 240 -- slider range 1..2000; default 240 so game is playable on load
+pcall(function()
+    if setfpscap then setfpscap(fpsCap) end
+end)
+local silentAim = {
+    enabled = false,
+    fov = 100,
+    part = "Head",
+    keybind = nil,
+    holdMode = false,
+    bindMode = "Toggle",
+    fovCircle = false,
+    tracer = false, -- removed from UI
+    healthCheck = true,
+    neverMiss = false,
+    visualizer = false,
+    visualizerColor = Color3.fromRGB(255, 0, 0),
+    multiTarget = false,
+    multiIndex = 1,
+    multiLast = 0,
+    circleColor = Color3.fromRGB(255, 50, 50),
+    targetMode = "Mouse",
+    wallCheck = false,
+    revolverBypass = false,
+    hitChance = 100,
+    bulletSpread = 1,
+}
+
+Utils.flameLock = {
+    enabled = false,
+    keybind = nil,
+    bindMode = "Toggle",
+    smoothness = 0.45,
+    prediction = 0.1,
+    horizOffset = 1,
+    upOffset = -1.6,
+    lockPart = "HumanoidRootPart",
+    sticky = false,
+    releaseOnSwitch = false,
+    snapIntensity = 0.35,
+    lastShot = 0,
+}
+
+Utils.forceHit = {
+    enabled = false,
+    fov = 100,
+    tracer = false,
+    showBullets = true,
+    bulletVizType = "Bullets", -- Bullets | Lightning | Laser
+    targetTracer = false,
+    fullAuto = false,
+    fireRate = 0.067,
+    holding = false,
+    lastFire = 0,
+    mode = "Fov",
+    knockCheck = false,
+    visualizer = false,
+    visualizerColor = Color3.fromRGB(255, 0, 0),
+    visSpread = 1.8,
+    tpMode = false,
+    tpReturn = false,
+    tpReturnDelay = 0.145, -- HC: wait before return (anti-kick); farther targets need longer
+    tpStay = false,
+    tpDist = 8,
+    tpHold = 1.5,
+    tpBusy = false,
+    manualTarget = nil,
+    tools = {
+        ["[DoubleBarrel]"] = true,
+        ["[Revolver]"] = true,
+        ["[Shotgun]"] = true,
+        ["[SMG]"] = true,
+        ["[Silencer]"] = true,
+        ["[TacticalShotgun]"] = true,
+        ["[AK47]"] = true,
+        ["[AR]"] = true,
+        ["[DrumShotgun]"] = true,
+        ["[Glock]"] = true,
+    },
+    parts = {
+        "Head", "UpperTorso", "LowerTorso",
+        "LeftUpperArm", "LeftLowerArm", "LeftHand",
+        "RightUpperArm", "RightLowerArm", "RightHand",
+        "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+        "RightUpperLeg", "RightLowerLeg", "RightFoot",
+        "HumanoidRootPart",
+    },
+}
+
+Utils.forceHitValid = function(plr)
+    if not plr or plr == Player or not plr.Character then return false end
+    local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    -- Health check / floor KO (always when silentAim.healthCheck or forceHit.knockCheck)
+    if (silentAim and silentAim.healthCheck) or Utils.forceHit.knockCheck then
+        if Utils.isCharacterDowned(plr.Character) then return false end
+        local knocked = false
+        pcall(function()
+            local be = plr.Character:FindFirstChild("BodyEffects")
+            if be then
+                for _, n in ipairs({"K.O", "KO", "Knocked", "Downed"}) do
+                    local v = be:FindFirstChild(n)
+                    if v and ((typeof(v) == "Instance" and v:IsA("BoolValue") and v.Value) or v == true) then
+                        knocked = true
+                        break
+                    end
+                end
+            end
+        end)
+        if knocked then return false end
+    end
+    if false and Utils.forceHit.knockCheck then
+        local knocked = false
+        pcall(function()
+            local be = plr.Character:FindFirstChild("BodyEffects")
+            if be and be:FindFirstChild("K.O") then
+                knocked = be["K.O"].Value == true
+            end
+        end)
+        if knocked or Utils.isCharacterDowned(plr.Character) then return false end
+    end
+    do
+        local ok, wl = pcall(function() return Utils.skipProtected(plr) end)
+        if ok and wl then return false end
+    end
+    return true
+end
+
+
+-- early stub; replaced later with full implementation if needed
+Utils.silentPartValid = Utils.silentPartValid or function(part)
+    if not part or not part.Parent then return false end
+    local model = part:FindFirstAncestorOfClass("Model")
+    if not model then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if silentAim and silentAim.healthCheck and Utils.isCharacterDowned then
+        local ok, down = pcall(Utils.isCharacterDowned, model)
+        if ok and down then return false end
+    end
+    local plr = Players:GetPlayerFromCharacter(model)
+    if not plr or plr.Character ~= model then return false end
+    return true
+end
+
+Utils.forceHitClosestPart = function(plr)
+    local char = plr and plr.Character
+    if not char then return nil end
+    -- Da Hood Force Hit: torso only
+    if selectedGameMode == "Da Hood" then
+        return char:FindFirstChild("UpperTorso")
+            or char:FindFirstChild("Torso")
+            or char:FindFirstChild("HumanoidRootPart")
+    end
+    -- Hood Customs: closest body part to mouse within FOV logic (all parts)
+    local mouseLoc = UserInputService:GetMouseLocation()
+    local cam = workspace.CurrentCamera
+    if not cam then
+        return char:FindFirstChild("UpperTorso") or char:FindFirstChild("HumanoidRootPart")
+    end
+    local best, bestD = nil, math.huge
+    for _, name in ipairs(Utils.forceHit.parts or {}) do
+        local part = char:FindFirstChild(name)
+        if part then
+            local sp, on = cam:WorldToViewportPoint(part.Position)
+            if on then
+                local d = (Vector2.new(sp.X, sp.Y) - mouseLoc).Magnitude
+                if d < bestD then
+                    bestD = d
+                    best = part
+                end
+            end
+        end
+    end
+    return best or char:FindFirstChild("UpperTorso") or char:FindFirstChild("HumanoidRootPart")
+end
+
+Utils.forceHitTarget = function()
+    local mouseLoc = UserInputService:GetMouseLocation()
+    local cam = workspace.CurrentCamera
+    if not cam then return nil end
+    local best, bestD = nil, tonumber(Utils.forceHit.fov) or 100
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if Utils.forceHitValid(plr) then
+            local part = Utils.forceHitClosestPart(plr)
+            if part then
+                local sp, on = cam:WorldToViewportPoint(part.Position)
+                if on then
+                    local d = (Vector2.new(sp.X, sp.Y) - mouseLoc).Magnitude
+                    if d < bestD then
+                        bestD = d
+                        best = part
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+Utils.forceHitBarrel = function()
+    local char = Player.Character
+    if not char then return nil end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if tool then
+        local h = tool:FindFirstChild("Handle") or tool:FindFirstChild("Barrel") or tool:FindFirstChild("Muzzle")
+        if h and h:IsA("BasePart") then return h.Position end
+    end
+    local arm = char:FindFirstChild("Right Arm") or char:FindFirstChild("RightUpperArm")
+    if arm and arm:IsA("BasePart") then return arm.Position end
+    return char:GetPivot().Position
+end
+
+Utils.forceHitTracer = function(a, b)
+    if not a or not b or (b - a).Magnitude < 0.1 then return end
+    pcall(function()
+        local beam = Instance.new("Beam")
+        local a0 = Instance.new("Attachment")
+        local a1 = Instance.new("Attachment")
+        beam.Segments = 1
+        beam.Width0 = 0.1
+        beam.Width1 = 0.1
+        beam.Color = ColorSequence.new(Color3.fromRGB(255, 200, 0))
+        beam.Transparency = NumberSequence.new(0.4)
+        beam.FaceCamera = true
+        a0.WorldPosition = a
+        a1.WorldPosition = b
+        a0.Parent = workspace.Terrain
+        a1.Parent = workspace.Terrain
+        beam.Attachment0 = a0
+        beam.Attachment1 = a1
+        beam.Parent = workspace.Terrain
+        task.delay(0.08, function()
+            pcall(function() beam:Destroy() end)
+            pcall(function() a0:Destroy() end)
+            pcall(function() a1:Destroy() end)
+        end)
+    end)
+end
+
+-- Local bullet VFX matching normal HC multi-pellet beams + muzzle flash.
+-- Force-hit never runs the gun fire path, so we spawn these client-side only.
+Utils.forceHitShowBullet = function(a, b)
+    if not a or not b then return end
+    local delta = b - a
+    if delta.Magnitude < 0.05 then return end
+
+    pcall(function()
+        local rng = Random.new()
+        local dir = delta.Unit
+        local dist = delta.Magnitude
+        local vizType = tostring(Utils.forceHit.bulletVizType or "Bullets")
+        local yellow = Color3.fromRGB(255, 228, 55)
+        local red = Color3.fromRGB(255, 40, 40)
+
+        local function makeBeam(fromPos, toPos, color, width0, width1, lifetime, segments)
+            local p0 = Instance.new("Part")
+            p0.Anchored = true
+            p0.CanCollide = false
+            p0.CanQuery = false
+            p0.CanTouch = false
+            p0.Transparency = 1
+            p0.Size = Vector3.new(0.05, 0.05, 0.05)
+            p0.CFrame = CFrame.new(fromPos)
+            p0.Parent = workspace.Terrain
+            local p1 = Instance.new("Part")
+            p1.Anchored = true
+            p1.CanCollide = false
+            p1.CanQuery = false
+            p1.CanTouch = false
+            p1.Transparency = 1
+            p1.Size = Vector3.new(0.05, 0.05, 0.05)
+            p1.CFrame = CFrame.new(toPos)
+            p1.Parent = workspace.Terrain
+            local att0 = Instance.new("Attachment")
+            att0.Parent = p0
+            local att1 = Instance.new("Attachment")
+            att1.Parent = p1
+            local beam = Instance.new("Beam")
+            beam.Attachment0 = att0
+            beam.Attachment1 = att1
+            beam.FaceCamera = true
+            beam.LightEmission = 1
+            beam.LightInfluence = 0
+            beam.Segments = segments or 4
+            beam.Texture = ""
+            beam.Width0 = width0 or 0.08
+            beam.Width1 = width1 or 0.06
+            beam.Color = ColorSequence.new(color)
+            beam.Transparency = NumberSequence.new(0.15)
+            beam.Parent = p0
+            task.delay(lifetime or 0.28, function()
+                pcall(function() p0:Destroy() end)
+                pcall(function() p1:Destroy() end)
+            end)
+            return beam, p0
+        end
+
+        -- Muzzle flash (Bullets / Lightning only)
+        if vizType ~= "Laser" then
+            pcall(function()
+                local char = Player.Character
+                local tool = char and char:FindFirstChildOfClass("Tool")
+                local handle = tool and (tool:FindFirstChild("Handle") or tool:FindFirstChild("Gun") or tool.PrimaryPart)
+                local light = Instance.new("PointLight")
+                light.Brightness = 2.0
+                light.Range = 11
+                light.Color = Color3.new(1, 1, 1)
+                if handle then
+                    light.Parent = handle
+                else
+                    local host = Instance.new("Part")
+                    host.Anchored = true
+                    host.CanCollide = false
+                    host.Transparency = 1
+                    host.Size = Vector3.new(0.1, 0.1, 0.1)
+                    host.CFrame = CFrame.new(a)
+                    host.Parent = workspace.Terrain
+                    light.Parent = host
+                    task.delay(0.35, function() pcall(function() host:Destroy() end) end)
+                end
+                task.delay(0.2, function() pcall(function() light:Destroy() end) end)
+            end)
+        end
+
+        if vizType == "Laser" then
+            -- Neon red solid line, fades after 0.5s
+            local p0 = Instance.new("Part")
+            p0.Anchored = true
+            p0.CanCollide = false
+            p0.CanQuery = false
+            p0.Transparency = 1
+            p0.Size = Vector3.new(0.05, 0.05, 0.05)
+            p0.CFrame = CFrame.new(a)
+            p0.Parent = workspace.Terrain
+            local p1 = Instance.new("Part")
+            p1.Anchored = true
+            p1.CanCollide = false
+            p1.CanQuery = false
+            p1.Transparency = 1
+            p1.Size = Vector3.new(0.05, 0.05, 0.05)
+            p1.CFrame = CFrame.new(b)
+            p1.Parent = workspace.Terrain
+            local att0 = Instance.new("Attachment")
+            att0.Parent = p0
+            local att1 = Instance.new("Attachment")
+            att1.Parent = p1
+            -- Core beam
+            local beam = Instance.new("Beam")
+            beam.Attachment0 = att0
+            beam.Attachment1 = att1
+            beam.FaceCamera = true
+            beam.LightEmission = 1
+            beam.LightInfluence = 0
+            beam.Segments = 2
+            beam.Width0 = 0.2
+            beam.Width1 = 0.16
+            beam.Color ... (720 KB left)
